@@ -10,7 +10,6 @@ A personal Telegram bot that manages your Google Calendar using natural language
 - **Conflict detection** — warns if a time slot is taken, with option to replace
 - **Multi-day events** — "trip to Bali July 1 to July 5"
 - **Query by date** — "what do I have on Monday?"
-- **Daily summary** — sends tomorrow's schedule every day at 12pm SGT
 - **Colour coding** — events are colour-coded by category via `COLOR_MAP`
 - All times in Singapore time (SGT)
 
