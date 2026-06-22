@@ -175,8 +175,8 @@ def check_conflicts(service, start_dt: datetime.datetime, end_dt: datetime.datet
 def find_events(service, title_hint: str, date_hint: Optional[str] = None) -> list:
     if date_hint:
         base = datetime.datetime.strptime(date_hint, "%Y-%m-%d").replace(tzinfo=ZoneInfo(MY_TZ))
-        time_min = (base - datetime.timedelta(days=3)).isoformat()
-        time_max = (base + datetime.timedelta(days=7)).isoformat()
+        time_min = base.isoformat()
+        time_max = (base + datetime.timedelta(days=1)).isoformat()
     else:
         now = datetime.datetime.now(ZoneInfo(MY_TZ))
         time_min = now.isoformat()
