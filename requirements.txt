@@ -1,4 +1,4 @@
-python-telegram-bot[job-queue]>=20.0
+python-telegram-bot[webhooks]>=20.0
 anthropic
 google-auth
 google-auth-oauthlib

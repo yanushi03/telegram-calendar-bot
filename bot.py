@@ -102,7 +102,7 @@ def classify_and_extract(text: str, pending: Optional[dict]) -> dict:
 
 Classify the user message and return ONLY a valid JSON object — no prose, no markdown fences — with exactly these keys:
 
-  intent        : "create" | "edit" | "delete" | "confirm" | "cancel" | "list" | "other"
+  intent        : "create" | "edit" | "delete" | "confirm" | "cancel" | "list" | "search" | "other"
   title         : string or null   — event title for create
   start         : ISO 8601 with +08:00 offset, or null
   end           : ISO 8601 with +08:00 offset, or null (default: start + 1 hour)
@@ -111,6 +111,7 @@ Classify the user message and return ONLY a valid JSON object — no prose, no m
   search_date   : "YYYY-MM-DD" or null   — date hint to narrow the search
   updates       : object or null   — for edit: keys are any of title/start/end with new values
   query_date    : "YYYY-MM-DD" or null   — for list: the date the user wants to see
+  search_query  : string or null   — for search: keyword to find upcoming events by name
   category      : string or null   — best matching category from this list: {list(COLOR_MAP.keys())}
 
 Rules:
@@ -121,7 +122,9 @@ Rules:
 - Editing just a time: put the new datetime in updates.start; if only time-of-day is given, keep the same date as the event being edited (use search_date as a reference).
 - Multi-day events ("trip from June 20 to June 25", "holiday 1–5 July"): set all_day: true, start to the first day, end to the LAST INCLUSIVE day (the code will handle the exclusive offset). Use "YYYY-MM-DD" format for all_day start/end.
 - Single words like "trip", "holiday", "travel", "vacation", "camp" with a date range always imply all_day: true.
-- "what do I have on [date]", "what's on [date]", "show me [date]", "am I free on [date]" → intent: "list", query_date: that date
+- "when is my [event]", "when do I have [event]", "when is [event] due", "next [event]" → intent: "search", search_query: the event keyword. Use this when the user mentions a specific event NAME and wants to find it.
+- "what do I have on [date]", "what's on [date]", "show me [date]", "am I free on [date]" → intent: "list", query_date: that date. Use this ONLY when a specific date is mentioned, not an event name.
+- IMPORTANT: "when is my X" always means search for event X, never list.
 - If the message is not calendar-related, return intent: "other"."""
 
     resp = anthropic_client.messages.create(
@@ -240,6 +243,38 @@ def format_day_summary(events: list, label: str) -> str:
     return f"{label.capitalize()}:\n" + "\n".join(lines)
 
 
+def search_events(service, query: str, days: int = 90) -> list:
+    now = datetime.datetime.now(ZoneInfo(MY_TZ))
+    time_max = (now + datetime.timedelta(days=days)).isoformat()
+    all_events = []
+    cal_list = service.calendarList().list().execute()
+    for cal in cal_list.get("items", []):
+        try:
+            result = service.events().list(
+                calendarId=cal["id"],
+                timeMin=now.isoformat(),
+                timeMax=time_max,
+                q=query,
+                singleEvents=True,
+                orderBy="startTime",
+            ).execute()
+            all_events.extend(result.get("items", []))
+        except Exception:
+            pass
+    all_events.sort(
+        key=lambda e: e.get("start", {}).get("dateTime") or e.get("start", {}).get("date") or ""
+    )
+    # Deduplicate
+    seen = set()
+    unique = []
+    for e in all_events:
+        key = (e.get("summary", ""), e.get("start", {}).get("dateTime") or e.get("start", {}).get("date"))
+        if key not in seen:
+            seen.add(key)
+            unique.append(e)
+    return unique
+
+
 def conflict_text(conflicts: list) -> str:
     lines = "\n".join(f"  • {e['summary']} — {fmt_time(e)}" for e in conflicts)
     return f"There's already something scheduled at that time:\n{lines}\n\nPick a different time slot."
@@ -249,22 +284,6 @@ def color_id(category: Optional[str]) -> Optional[str]:
     if not category or not COLOR_MAP:
         return None
     return COLOR_MAP.get(category.lower().strip())
-
-
-# ---------------------------------------------------------------------------
-# Daily summary job
-# ---------------------------------------------------------------------------
-
-async def daily_summary(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        service = get_calendar_service()
-        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-        events = get_events_for_date(service, tomorrow)
-        label = tomorrow.strftime("%A %d %b")
-        text = "🌅 Here's your schedule for tomorrow:\n\n" + format_day_summary(events, f"tomorrow ({label})")
-        await context.bot.send_message(chat_id=ALLOWED_CHAT_ID, text=text)
-    except Exception as e:
-        await context.bot.send_message(chat_id=ALLOWED_CHAT_ID, text=f"⚠️ Could not fetch tomorrow's schedule: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +297,8 @@ async def cmd_start(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         '  ✅ "dentist tomorrow 3pm"\n'
         '  ✏️ "move dentist to 4pm"\n'
         '  🗑️ "delete gym session Friday"\n'
-        '  📋 "what do I have on Monday?"\n\n'
+        '  📋 "what do I have on Monday?"\n'
+        '  🌈 Events are colour-coded by category\n\n'
         "All times are in Singapore time (SGT)."
     )
 
@@ -506,12 +526,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "list":
         query_date_str = parsed.get("query_date")
         if not query_date_str:
-            await update.message.reply_text("🤔 Which date do you want to check?")
+            # Misclassified — treat as search using the original text
+            intent = "search"
+            parsed["search_query"] = parsed.get("search_query") or parsed.get("title") or text
+        else:
+            date = datetime.date.fromisoformat(query_date_str)
+            events = get_events_for_date(service, date)
+            label = date.strftime("%A %d %b")
+            await update.message.reply_text(format_day_summary(events, f"on {label}"))
             return
-        date = datetime.date.fromisoformat(query_date_str)
-        events = get_events_for_date(service, date)
-        label = date.strftime("%A %d %b")
-        await update.message.reply_text(format_day_summary(events, f"on {label}"))
+
+    # ── SEARCH ────────────────────────────────────────────────────────────────
+    if intent == "search":
+        query = parsed.get("search_query")
+        if not query:
+            await update.message.reply_text("🤔 What event are you looking for?")
+            return
+        matches = search_events(service, query)
+        if not matches:
+            await update.message.reply_text(f"🔍 No upcoming events found matching '{query}'.")
+            return
+        lines = [f"🔍 Upcoming '{query}' events:\n"]
+        for e in matches[:10]:
+            lines.append(f"🔹 {fmt_time(e)} — {e['summary']}")
+        await update.message.reply_text("\n".join(lines))
         return
 
     # ── OTHER ─────────────────────────────────────────────────────────────────
@@ -532,11 +570,6 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    app.job_queue.run_daily(
-        daily_summary,
-        time=datetime.time(hour=12, minute=0, tzinfo=ZoneInfo(MY_TZ)),
-    )
 
     if WEBHOOK_URL:
         # Production: Telegram pushes updates to your URL
