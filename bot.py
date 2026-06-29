@@ -13,7 +13,6 @@ from googleapiclient.discovery import build
 from telegram import Update
 from telegram.ext import (
     Application,
-    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
@@ -572,7 +571,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(on_button))
+
 
     if WEBHOOK_URL:
         # Production: Telegram pushes updates to your URL
