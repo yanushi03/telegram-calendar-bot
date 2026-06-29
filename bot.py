@@ -13,6 +13,7 @@ from googleapiclient.discovery import build
 from telegram import Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
